@@ -1,5 +1,6 @@
 import os
 import time
+import warnings
 import gradio as gr
 import roop.globals
 import roop.metadata
@@ -17,6 +18,8 @@ roop.globals.keep_frames = None
 roop.globals.skip_audio = None
 roop.globals.use_batch = None
 
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 def prepare_environment():
     roop.globals.output_path = os.path.abspath(os.path.join(os.getcwd(), "output"))
