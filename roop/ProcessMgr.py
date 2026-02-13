@@ -7,6 +7,7 @@ from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
+import roop.utilities as util
 import roop.vr_util as vr
 
 from typing import Any, List, Callable
@@ -113,17 +114,21 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.options = options
         devicename = get_device()
-        selected_cuda = roop.globals.cuda_device_id if devicename == 'cuda' else None
 
         roop.globals.g_desired_face_analysis=["landmark_3d_68", "landmark_2d_106","detection","recognition"]
         if options.swap_mode == "all_female" or options.swap_mode == "all_male":
             roop.globals.g_desired_face_analysis.append("genderage")
 
+        released_processors = False
         for p in self.processors:
             newp = next((x for x in options.processors.keys() if x == p.processorname), None)
             if newp is None:
                 p.Release()
+                released_processors = True
                 del p
+
+        if released_processors:
+            util.clear_torch_cuda_cache()
 
         newprocessors = []
         for key, extoption in options.processors.items():
@@ -134,11 +139,11 @@ class ProcessMgr():
                 p = str_to_class(module, classname)
             if p is not None:
                 extoption.update({"devicename": devicename})
+                extoption.update({"use_all_gpus": getattr(roop.globals.CFG, 'use_all_gpus', False)})
+                extoption.update({"gpu_device_id": roop.globals.cuda_device_id})
+                extoption.update({"dmdnet_max_specific_refs": getattr(roop.globals.CFG, 'dmdnet_max_specific_refs', 4)})
+                extoption.update({"dmdnet_specific_batch_size": getattr(roop.globals.CFG, 'dmdnet_specific_batch_size', 2)})
                 p.Initialize(extoption)
-                if selected_cuda is not None:
-                    print(f"Processor '{key}' initialized on cuda:{selected_cuda}")
-                else:
-                    print(f"Processor '{key}' initialized on {devicename}")
                 newprocessors.append(p)
             else:
                 print(f"Not using {module}")
@@ -891,6 +896,7 @@ class ProcessMgr():
         for p in self.processors:
             p.Release()
         self.processors.clear()
+        util.clear_torch_cuda_cache()
         if self.videowriter is not None:
             self.videowriter.close()
         if self.streamwriter is not None:

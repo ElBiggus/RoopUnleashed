@@ -66,12 +66,15 @@ def settings_tab():
                 gpu_list = get_available_gpus()
                 gpu_value = get_current_gpu_value(gpu_list)
                 gpu_dropdown = gr.Dropdown(choices=gpu_list, label="Select GPU", value=gpu_value, elem_id='gpu_device', interactive=True, visible=True)
+                settings_controls.append(gr.Checkbox(label="All GPUs (torch models)", value=getattr(roop.globals.CFG, 'use_all_gpus', False), elem_id='use_all_gpus', interactive=True))
                 
                 chk_det_size = gr.Checkbox(label="Use default Det-Size", value=True, elem_id='default_det_size', interactive=True)
                 settings_controls.append(gr.Checkbox(label="Force CPU for Face Analyser", value=roop.globals.CFG.force_cpu, elem_id='force_cpu', interactive=True))
                 max_threads = gr.Slider(1, 32, value=roop.globals.CFG.max_threads, label="Max. Number of Threads", info='default: 3', step=1.0, interactive=True)
             with gr.Column():
                 memory_limit = gr.Slider(0, 128, value=roop.globals.CFG.memory_limit, label="Max. Memory to use (Gb)", info='0 meaning no limit', step=1.0, interactive=True)
+                dmdnet_max_specific_refs = gr.Slider(0, 32, value=getattr(roop.globals.CFG, 'dmdnet_max_specific_refs', 4), label="DMDNet Max Specific Refs", info='0 meaning unlimited', step=1.0, interactive=True)
+                dmdnet_specific_batch_size = gr.Slider(0, 16, value=getattr(roop.globals.CFG, 'dmdnet_specific_batch_size', 2), label="DMDNet Specific Batch Size", info='0 meaning unlimited', step=1.0, interactive=True)
                 settings_controls.append(gr.Dropdown(image_formats, label="Image Output Format", info='default: png', value=roop.globals.CFG.output_image_format, elem_id='output_image_format', interactive=True))
             with gr.Column():
                 settings_controls.append(gr.Dropdown(video_codecs, label="Video Codec", info='default: libx264', value=roop.globals.CFG.output_video_codec, elem_id='output_video_codec', interactive=True))
@@ -92,6 +95,8 @@ def settings_tab():
         s.select(fn=on_settings_changed)
     max_threads.input(fn=lambda a,b='max_threads':on_settings_changed_misc(a,b), inputs=[max_threads])
     memory_limit.input(fn=lambda a,b='memory_limit':on_settings_changed_misc(a,b), inputs=[memory_limit])
+    dmdnet_max_specific_refs.input(fn=lambda a,b='dmdnet_max_specific_refs':on_settings_changed_misc(a,b), inputs=[dmdnet_max_specific_refs])
+    dmdnet_specific_batch_size.input(fn=lambda a,b='dmdnet_specific_batch_size':on_settings_changed_misc(a,b), inputs=[dmdnet_specific_batch_size])
     video_quality.input(fn=lambda a,b='video_quality':on_settings_changed_misc(a,b), inputs=[video_quality])
     gpu_dropdown.select(fn=on_gpu_changed)
 

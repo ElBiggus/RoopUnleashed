@@ -5,6 +5,7 @@ import threading
 from torchvision import transforms
 from clip.clipseg import CLIPDensePredT
 import numpy as np
+import roop.globals
 
 from roop.typing import Frame
 
@@ -21,7 +22,9 @@ class Mask_Clip2Seg():
 
     def Initialize(self, plugin_options:dict):
         if self.plugin_options is not None:
-            if self.plugin_options["devicename"] != plugin_options["devicename"]:
+            if self.plugin_options["devicename"] != plugin_options["devicename"] or \
+               self.plugin_options.get("gpu_device_id") != plugin_options.get("gpu_device_id") or \
+               self.plugin_options.get("use_all_gpus", False) != plugin_options.get("use_all_gpus", False):
                 self.Release()
 
         self.plugin_options = plugin_options
@@ -30,7 +33,18 @@ class Mask_Clip2Seg():
             self.model_clip.eval();
             self.model_clip.load_state_dict(torch.load('models/CLIP/rd64-uni-refined.pth', map_location=torch.device('cpu')), strict=False)
 
-        device = torch.device(self.plugin_options["devicename"])
+        selected_gpu_id = self.plugin_options.get("gpu_device_id", roop.globals.cuda_device_id)
+        if self.plugin_options["devicename"] == 'cuda' and torch.cuda.is_available():
+            if selected_gpu_id >= torch.cuda.device_count():
+                selected_gpu_id = 0
+            device = torch.device(f'cuda:{selected_gpu_id}')
+            if self.plugin_options.get("use_all_gpus", False):
+                print(f"Clip2Seg running on single GPU cuda:{selected_gpu_id} (DataParallel not enabled in first pass)")
+            else:
+                print(f"Clip2Seg running on single GPU cuda:{selected_gpu_id}")
+        else:
+            device = torch.device(self.plugin_options["devicename"])
+            print(f"Clip2Seg running on device {device}")
         self.model_clip.to(device)
 
 

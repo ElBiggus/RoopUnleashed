@@ -32,8 +32,11 @@ class Settings:
         self.clear_output = self.default_get(data, 'clear_output', True)
         self.max_threads = self.default_get(data, 'max_threads', 2)
         self.memory_limit = self.default_get(data, 'memory_limit', 0)
+        self.dmdnet_max_specific_refs = self.default_get(data, 'dmdnet_max_specific_refs', 4)
+        self.dmdnet_specific_batch_size = self.default_get(data, 'dmdnet_specific_batch_size', 2)
         self.provider = self.default_get(data, 'provider', 'cuda')
         self.gpu_device_id = self.default_get(data, 'gpu_device_id', 0)
+        self.use_all_gpus = self.default_get(data, 'use_all_gpus', False)
         self.force_cpu = self.default_get(data, 'force_cpu', False)
         self.output_template = self.default_get(data, 'output_template', '{file}_{time}')
         self.use_os_temp_folder = self.default_get(data, 'use_os_temp_folder', False)
@@ -57,8 +60,11 @@ class Settings:
             'clear_output' : self.clear_output,
             'max_threads' : self.max_threads,
             'memory_limit' : self.memory_limit,
+            'dmdnet_max_specific_refs' : self.dmdnet_max_specific_refs,
+            'dmdnet_specific_batch_size' : self.dmdnet_specific_batch_size,
             'provider' : self.provider,
             'gpu_device_id' : self.gpu_device_id,
+            'use_all_gpus' : self.use_all_gpus,
             'force_cpu' : self.force_cpu,
 			'output_template' : self.output_template,
             'use_os_temp_folder' : self.use_os_temp_folder,

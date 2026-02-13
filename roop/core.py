@@ -6,6 +6,7 @@ import shutil
 # single thread doubles cuda performance - needs to be set before torch import
 if any(arg.startswith('--execution-provider') for arg in sys.argv):
     os.environ['OMP_NUM_THREADS'] = '1'
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import warnings
 from typing import List
@@ -121,10 +122,7 @@ def release_resources() -> None:
         process_mgr = None
 
     gc.collect()
-    # if 'CUDAExecutionProvider' in roop.globals.execution_providers and torch.cuda.is_available():
-    #     with torch.cuda.device('cuda'):
-    #         torch.cuda.empty_cache()
-    #         torch.cuda.ipc_collect()
+    util.clear_torch_cuda_cache()
 
 
 def pre_check() -> bool:

@@ -349,3 +349,15 @@ def print_cuda_info():
         print(f'Number of CUDA devices: {torch.cuda.device_count()} Currently used Id: {torch.cuda.current_device()} Device Name: {torch.cuda.get_device_name(torch.cuda.current_device())}')
     except:
        print('No CUDA device found!')
+
+
+def clear_torch_cuda_cache():
+    try:
+        if torch.cuda is not None and torch.cuda.is_available():
+            for device_id in range(torch.cuda.device_count()):
+                with torch.cuda.device(device_id):
+                    torch.cuda.empty_cache()
+                    if hasattr(torch.cuda, 'ipc_collect'):
+                        torch.cuda.ipc_collect()
+    except Exception as e:
+        print(f'Warning: Failed to clear CUDA cache cleanly: {e}')

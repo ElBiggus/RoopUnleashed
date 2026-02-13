@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import torch.nn.utils.spectral_norm as SpectralNorm
 import threading
 from torchvision.ops import roi_align
+import roop.globals
 
 from math import sqrt
 
@@ -22,6 +23,10 @@ class Enhance_DMDNet():
     plugin_options:dict = None
     model_dmdnet = None
     torchdevice = None
+    cached_specific_signature = None
+    cached_specific_mem_256 = None
+    cached_specific_mem_128 = None
+    cached_specific_mem_64 = None
 
     processorname = 'dmdnet'
     type = 'enhance'
@@ -29,10 +34,16 @@ class Enhance_DMDNet():
 
     def Initialize(self, plugin_options:dict):
         if self.plugin_options is not None:
-            if self.plugin_options["devicename"] != plugin_options["devicename"]:
+            if self.plugin_options["devicename"] != plugin_options["devicename"] or \
+               self.plugin_options.get("gpu_device_id") != plugin_options.get("gpu_device_id") or \
+               self.plugin_options.get("use_all_gpus", False) != plugin_options.get("use_all_gpus", False):
                 self.Release()
 
         self.plugin_options = plugin_options
+        self.cached_specific_signature = None
+        self.cached_specific_mem_256 = None
+        self.cached_specific_mem_128 = None
+        self.cached_specific_mem_64 = None
         if self.model_dmdnet is None:
             self.model_dmdnet = self.create(self.plugin_options["devicename"])
             
@@ -47,7 +58,67 @@ class Enhance_DMDNet():
 
 
     def Release(self):
-        self.model_gfpgan = None
+        self.model_dmdnet = None
+        self.cached_specific_signature = None
+        self.cached_specific_mem_256 = None
+        self.cached_specific_mem_128 = None
+        self.cached_specific_mem_64 = None
+
+
+    def get_specific_signature(self, ref_faceset: FaceSet):
+        return (
+            len(ref_faceset.faces),
+            tuple(id(face) for face in ref_faceset.faces),
+            tuple(id(img) for img in ref_faceset.ref_images)
+        )
+
+
+    def merge_specific_mem_chunks(self, chunk_mems):
+        if len(chunk_mems) < 1:
+            return None
+        merged = {}
+        keys = chunk_mems[0].keys()
+        for key in keys:
+            merged[key] = torch.cat([chunk[key] for chunk in chunk_mems], dim=0)
+        return merged
+
+
+    def build_specific_dictionary(self, dmdnet_model, specific_imgs, specific_locs):
+        max_specific_refs = self.plugin_options.get("dmdnet_max_specific_refs", 4)
+        specific_batch_size = self.plugin_options.get("dmdnet_specific_batch_size", 2)
+
+        if max_specific_refs > 0 and specific_imgs.shape[0] > max_specific_refs:
+            specific_imgs = specific_imgs[:max_specific_refs]
+            specific_locs = specific_locs[:max_specific_refs]
+
+        if specific_batch_size <= 0:
+            specific_batch_size = specific_imgs.shape[0] if specific_imgs.shape[0] > 0 else 1
+
+        mem256_chunks = []
+        mem128_chunks = []
+        mem64_chunks = []
+
+        with torch.no_grad():
+            for start_idx in range(0, specific_imgs.shape[0], specific_batch_size):
+                end_idx = min(start_idx + specific_batch_size, specific_imgs.shape[0])
+                sp_imgs_chunk = specific_imgs[start_idx:end_idx].to(self.torchdevice)
+                sp_locs_chunk = specific_locs[start_idx:end_idx]
+
+                chunk_mem256, chunk_mem128, chunk_mem64 = dmdnet_model.generate_specific_dictionary(
+                    sp_imgs=sp_imgs_chunk,
+                    sp_locs=sp_locs_chunk
+                )
+                mem256_chunks.append({k: (v.detach() if isinstance(v, torch.Tensor) else v) for k, v in chunk_mem256.items()})
+                mem128_chunks.append({k: (v.detach() if isinstance(v, torch.Tensor) else v) for k, v in chunk_mem128.items()})
+                mem64_chunks.append({k: (v.detach() if isinstance(v, torch.Tensor) else v) for k, v in chunk_mem64.items()})
+
+                del sp_imgs_chunk
+
+        return (
+            self.merge_specific_mem_chunks(mem256_chunks),
+            self.merge_specific_mem_chunks(mem128_chunks),
+            self.merge_specific_mem_chunks(mem64_chunks),
+        )
 
 
     # https://stackoverflow.com/a/67174339
@@ -121,46 +192,57 @@ class Enhance_DMDNet():
 
         # specific, change 1000 to 1 to activate
         if len(ref_faceset.faces) > 1:
-            SpecificImgs = []
-            SpecificLocs = []
-            for i,face in enumerate(ref_faceset.faces):
-                lm106 = face.landmark_2d_106
-                lq_landmarks = np.asarray(self.landmarks106_to_68(lm106))
-                ref_image = ref_faceset.ref_images[i]
-                if ref_image.shape[0] != 512 or ref_image.shape[1] != 512:
-                    # scale to 512x512
-                    scale_factor = 512 / ref_image.shape[1]
+            specific_signature = self.get_specific_signature(ref_faceset)
+            if specific_signature == self.cached_specific_signature and \
+               self.cached_specific_mem_256 is not None and \
+               self.cached_specific_mem_128 is not None and \
+               self.cached_specific_mem_64 is not None:
+                SpMem256Para = self.cached_specific_mem_256
+                SpMem128Para = self.cached_specific_mem_128
+                SpMem64Para = self.cached_specific_mem_64
+            else:
+                SpecificImgs = []
+                SpecificLocs = []
+                for i,face in enumerate(ref_faceset.faces):
+                    lm106 = face.landmark_2d_106
+                    lq_landmarks = np.asarray(self.landmarks106_to_68(lm106))
+                    ref_image = ref_faceset.ref_images[i]
+                    if ref_image.shape[0] != 512 or ref_image.shape[1] != 512:
+                        # scale to 512x512
+                        scale_factor = 512 / ref_image.shape[1]
 
-                    M = face.matrix * scale_factor
+                        M = face.matrix * scale_factor
 
-                    lq_landmarks = self.trans_points2d(lq_landmarks, M)
-                    ref_image = cv2.resize(ref_image, (512,512), interpolation = cv2.INTER_AREA)
+                        lq_landmarks = self.trans_points2d(lq_landmarks, M)
+                        ref_image = cv2.resize(ref_image, (512,512), interpolation = cv2.INTER_AREA)
 
-                if ref_image.ndim == 2:
-                    temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_GRAY2RGB)  # GGG
-                # else:
-                #     temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)  # RGB
+                    if ref_image.ndim == 2:
+                        temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_GRAY2RGB)  # GGG
+                    # else:
+                    #     temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)  # RGB
 
-                ref_tensor = read_img_tensor(ref_image)
-                ref_locs = get_component_location(lq_landmarks)
-                # self.check_bbox(ref_tensor, ref_locs.unsqueeze(0))
+                    ref_tensor = read_img_tensor(ref_image)
+                    ref_locs = get_component_location(lq_landmarks)
+                    # self.check_bbox(ref_tensor, ref_locs.unsqueeze(0))
 
-                SpecificImgs.append(ref_tensor)
-                SpecificLocs.append(ref_locs.unsqueeze(0))
+                    SpecificImgs.append(ref_tensor)
+                    SpecificLocs.append(ref_locs.unsqueeze(0))
 
-            SpecificImgs = torch.cat(SpecificImgs, dim=0)
-            SpecificLocs = torch.cat(SpecificLocs, dim=0)
-            # check_bbox(SpecificImgs, SpecificLocs)
-            SpMem256, SpMem128, SpMem64 = self.model_dmdnet.generate_specific_dictionary(sp_imgs = SpecificImgs.to(self.torchdevice), sp_locs = SpecificLocs)
-            SpMem256Para = {}
-            SpMem128Para = {}
-            SpMem64Para = {}
-            for k, v in SpMem256.items():
-                SpMem256Para[k] = v
-            for k, v in SpMem128.items():
-                SpMem128Para[k] = v
-            for k, v in SpMem64.items():
-                SpMem64Para[k] = v
+                SpecificImgs = torch.cat(SpecificImgs, dim=0)
+                SpecificLocs = torch.cat(SpecificLocs, dim=0)
+                # check_bbox(SpecificImgs, SpecificLocs)
+                dmdnet_model = self.model_dmdnet.module if isinstance(self.model_dmdnet, nn.DataParallel) else self.model_dmdnet
+                try:
+                    SpMem256Para, SpMem128Para, SpMem64Para = self.build_specific_dictionary(dmdnet_model, SpecificImgs, SpecificLocs)
+                    self.cached_specific_signature = specific_signature
+                    self.cached_specific_mem_256 = SpMem256Para
+                    self.cached_specific_mem_128 = SpMem128Para
+                    self.cached_specific_mem_64 = SpMem64Para
+                except torch.OutOfMemoryError:
+                    print('Warning: DMDNet specific dictionary OOM, falling back to generic enhancement for this frame.')
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    SpMem256Para, SpMem128Para, SpMem64Para = None, None, None
         else:
             # generic
             SpMem256Para, SpMem128Para, SpMem64Para = None, None, None
@@ -197,10 +279,31 @@ class Enhance_DMDNet():
     
 
     def create(self, devicename):
-        self.torchdevice = torch.device(devicename)
-        model_dmdnet = DMDNet().to(self.torchdevice)
-        weights = torch.load('./models/DMDNet.pth') 
-        model_dmdnet.load_state_dict(weights, strict=True)
+        use_all_gpus = self.plugin_options.get("use_all_gpus", False)
+        selected_gpu_id = self.plugin_options.get("gpu_device_id", roop.globals.cuda_device_id)
+
+        if devicename == 'cuda' and torch.cuda.is_available():
+            device_count = torch.cuda.device_count()
+            if selected_gpu_id >= device_count:
+                selected_gpu_id = 0
+
+            self.torchdevice = torch.device(f'cuda:{selected_gpu_id}')
+            model_dmdnet = DMDNet().to(self.torchdevice)
+
+            if use_all_gpus and device_count > 1:
+                device_ids = [selected_gpu_id] + [i for i in range(device_count) if i != selected_gpu_id]
+                model_dmdnet = nn.DataParallel(model_dmdnet, device_ids=device_ids, output_device=selected_gpu_id)
+                print(f"DMDNet DataParallel enabled on GPUs: {device_ids} (output cuda:{selected_gpu_id})")
+            else:
+                print(f"DMDNet running on single GPU cuda:{selected_gpu_id}")
+        else:
+            self.torchdevice = torch.device(devicename)
+            model_dmdnet = DMDNet().to(self.torchdevice)
+            print(f"DMDNet running on device {self.torchdevice}")
+
+        weights = torch.load('./models/DMDNet.pth', map_location='cpu')
+        target_model = model_dmdnet.module if isinstance(model_dmdnet, nn.DataParallel) else model_dmdnet
+        target_model.load_state_dict(weights, strict=True)
 
         model_dmdnet.eval()
         num_params = 0
